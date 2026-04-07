@@ -53,3 +53,8 @@ http://localhost:8080/swagger/openapi.json
 - `GET /api/v1/tasks/{id}`
 - `PUT /api/v1/tasks/{id}`
 - `DELETE /api/v1/tasks/{id}`
+
+# Дополнения от разработчика
+Расширенная версия (с некоторыми нюансами логики) Use Case Diagram для прояснения деталей
+и закрытия пробелов в понимании требований заказчика
+![use_case_extended_medods.drawio.png](assets/use_case_extended_medods.drawio.png)
