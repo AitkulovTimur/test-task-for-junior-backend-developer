@@ -10,7 +10,9 @@ import (
 	"syscall"
 	"time"
 
+	taskdomain "example.com/taskservice/internal/domain/task"
 	infrastructurepostgres "example.com/taskservice/internal/infrastructure/postgres"
+	logic "example.com/taskservice/internal/logic/task"
 	postgresrepo "example.com/taskservice/internal/repository/postgres"
 	transporthttp "example.com/taskservice/internal/transport/http"
 	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
@@ -36,7 +38,9 @@ func main() {
 	defer pool.Close()
 
 	taskRepo := postgresrepo.New(pool)
-	taskUsecase := task.NewService(taskRepo)
+	dateGenerator := logic.NewGenerator()
+	taskUsecase := task.NewService(taskRepo, dateGenerator, cfg.PlanningCounts)
+
 	taskHandler := httphandlers.NewTaskHandler(taskUsecase)
 	docsHandler := swaggerdocs.NewHandler()
 	router := transporthttp.NewRouter(taskHandler, docsHandler)
@@ -69,12 +73,22 @@ func main() {
 type config struct {
 	HTTPAddr    string
 	DatabaseDSN string
+	// Map for dates generation limits
+	PlanningCounts map[taskdomain.RecurrenceType]int
 }
 
 func loadConfig() config {
 	cfg := config{
 		HTTPAddr:    envOrDefault("HTTP_ADDR", ":8080"),
 		DatabaseDSN: envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable"),
+		PlanningCounts: map[taskdomain.RecurrenceType]int{
+			//TODO добавить в README: число задач для предгенерации. Сделал конфигурируемыми, несмотря на то, что в требованиях не было такого условия
+			taskdomain.TypeDaily:   7,
+			taskdomain.TypeWeekly:  7,
+			taskdomain.TypeMonthly: 3, //quarter of the year
+			taskdomain.TypeParity:  7,
+			// Specific doesn't require a limit because always fully pregenerated
+		},
 	}
 
 	if cfg.DatabaseDSN == "" {
