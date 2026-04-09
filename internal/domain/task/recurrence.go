@@ -8,8 +8,10 @@ import (
 type RecurrenceType string
 
 const (
-	TypeDaily    RecurrenceType = "daily"
-	TypeWeekly   RecurrenceType = "weekly"
+	TypeDaily  RecurrenceType = "daily"
+	TypeWeekly RecurrenceType = "weekly"
+	//TODO добавить в README: добавил от себя, так как не сложно в реализации, но заказчик бы добавил,
+	//так как у медперсонала есть некоторые процедуры по дням неделям
 	TypeMonthly  RecurrenceType = "monthly"
 	TypeParity   RecurrenceType = "parity"
 	TypeSpecific RecurrenceType = "specific"
@@ -30,6 +32,7 @@ type RecurrenceRule struct {
 	CreatedAt time.Time      `json:"created_at"`
 }
 
+// TODO: добавить в README: Может быть заполнено только 1 поле. Иначе упадет валидация (оптимизация для свагера займет время, решил оставить так, для экономии времени)
 type RecurrenceParams struct {
 	// daily: каждые N дней (1 - каждый день, 2 - через день)
 	Interval      int         `json:"interval,omitempty"`
