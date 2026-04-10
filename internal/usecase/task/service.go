@@ -221,12 +221,42 @@ func (s *Service) rescheduleSeries(ctx context.Context, taskID int64, ruleID *in
 	return s.updateSingleTask(ctx, taskID, input)
 }
 
-func (s *Service) Delete(ctx context.Context, id int64) error {
+func (s *Service) Delete(ctx context.Context, id int64, mode taskdomain.DeleteMode, deleteModified bool) error {
 	if id <= 0 {
 		return fmt.Errorf("%w: id must be positive", ErrInvalidInput)
 	}
 
-	return s.repo.Delete(ctx, id)
+	if !mode.Valid() {
+		return fmt.Errorf("%w: invalid delete mode", ErrInvalidInput)
+	}
+
+	// Get current task to check if it's part of a series
+	currentTask, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	switch mode {
+	case taskdomain.DeleteModeSingle:
+		return s.repo.Delete(ctx, id)
+
+	case taskdomain.DeleteModeFuture:
+		if currentTask.ParentRuleID == nil {
+			// Not a series task, treat as single deletion
+			return s.repo.Delete(ctx, id)
+		}
+		return s.repo.DeleteFutureTasksTx(ctx, *currentTask.ParentRuleID, id, currentTask.ScheduledAt)
+
+	case taskdomain.DeleteModeEntireSeries:
+		if currentTask.ParentRuleID == nil {
+			// Not a series task, treat as single deletion
+			return s.repo.Delete(ctx, id)
+		}
+		return s.repo.DeleteEntireSeriesTx(ctx, *currentTask.ParentRuleID, deleteModified)
+
+	default:
+		return fmt.Errorf("%w: unsupported delete mode", ErrInvalidInput)
+	}
 }
 
 func (s *Service) List(ctx context.Context) ([]taskdomain.Task, error) {

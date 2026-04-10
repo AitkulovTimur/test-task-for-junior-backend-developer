@@ -10,6 +10,23 @@ const (
 	StatusDone       Status = "done"
 )
 
+type DeleteMode string
+
+const (
+	DeleteModeSingle       DeleteMode = "single"
+	DeleteModeFuture       DeleteMode = "future"
+	DeleteModeEntireSeries DeleteMode = "entire_series"
+)
+
+func (d DeleteMode) Valid() bool {
+	switch d {
+	case DeleteModeSingle, DeleteModeFuture, DeleteModeEntireSeries:
+		return true
+	default:
+		return false
+	}
+}
+
 type Task struct {
 	ID           int64      `json:"id"`
 	Title        string     `json:"title"`
