@@ -10,5 +10,5 @@ ALTER TABLE tasks
     ADD COLUMN IF NOT EXISTS is_modified BOOLEAN NOT NULL DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;
 
-CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks (due_date);
+CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks (scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent_rule ON tasks (parent_rule_id);

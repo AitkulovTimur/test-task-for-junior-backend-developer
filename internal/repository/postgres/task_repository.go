@@ -3,12 +3,14 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	taskdomain "example.com/taskservice/internal/domain/task"
+	usecase "example.com/taskservice/internal/usecase/task"
 )
 
 type Repository struct {
@@ -23,7 +25,7 @@ func (r *Repository) Create(ctx context.Context, task *taskdomain.Task) (*taskdo
 	const query = `
 		INSERT INTO tasks (title, description, status, scheduled_at, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, title, description, status, scheduled_at, NULL, created_at, updated_at
+		RETURNING id, title, description, status, scheduled_at, NULL, is_modified, created_at, updated_at
 	`
 
 	row := r.pool.QueryRow(ctx, query, task.Title, task.Description, task.Status, task.ScheduledAt, task.CreatedAt, task.UpdatedAt)
@@ -50,12 +52,12 @@ func (r *Repository) CreateSeries(
 
 	// 2. Insert the rule
 	const ruleQuery = `
-       INSERT INTO recurrence_rules (type, params, created_at)
-       VALUES ($1, $2, $3)
+       INSERT INTO recurrence_rules (type, params, scheduled_at, created_at)
+       VALUES ($1, $2, $3, $4)
        RETURNING id
     `
 	var ruleID int64
-	err = tx.QueryRow(ctx, ruleQuery, rule.Type, rule.Params, rule.CreatedAt).Scan(&ruleID)
+	err = tx.QueryRow(ctx, ruleQuery, rule.Type, rule.Params, rule.ScheduledAt, rule.CreatedAt).Scan(&ruleID)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +69,7 @@ func (r *Repository) CreateSeries(
 	const taskQuery = `
        INSERT INTO tasks (title, description, status, scheduled_at, parent_rule_id, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, title, description, status, scheduled_at, parent_rule_id, created_at, updated_at
+       RETURNING id, title, description, status, scheduled_at, parent_rule_id, is_modified, created_at, updated_at
     `
 
 	for i, t := range tasks {
@@ -101,7 +103,7 @@ func (r *Repository) CreateSeries(
 
 func (r *Repository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
 	const query = `
-		SELECT id, title, description, status, scheduled_at, parent_rule_id, created_at, updated_at
+		SELECT id, title, description, status, scheduled_at, parent_rule_id, is_modified, created_at, updated_at
 		FROM tasks
 		WHERE id = $1
 	`
@@ -119,18 +121,45 @@ func (r *Repository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, e
 	return found, nil
 }
 
+func (r *Repository) GetRuleByID(ctx context.Context, id int64) (*taskdomain.RecurrenceRule, error) {
+	const query = `
+		SELECT id, type, params, scheduled_at, created_at
+		FROM recurrence_rules
+		WHERE id = $1
+	`
+
+	var rule taskdomain.RecurrenceRule
+	err := r.pool.QueryRow(ctx, query, id).Scan(
+		&rule.ID,
+		&rule.Type,
+		&rule.Params,
+		&rule.ScheduledAt,
+		&rule.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, taskdomain.ErrNotFound
+		}
+		return nil, err
+	}
+
+	return &rule, nil
+}
+
 func (r *Repository) Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
 	const query = `
 		UPDATE tasks
 		SET title = $1,
 			description = $2,
 			status = $3,
-			updated_at = $4
-		WHERE id = $5
-		RETURNING id, title, description, status, NULL, NULL, created_at, updated_at
+			scheduled_at = $4,
+			is_modified = true,
+			updated_at = $5
+		WHERE id = $6
+		RETURNING id, title, description, status, scheduled_at, parent_rule_id, is_modified, created_at, updated_at
 	`
 
-	row := r.pool.QueryRow(ctx, query, task.Title, task.Description, task.Status, task.UpdatedAt, task.ID)
+	row := r.pool.QueryRow(ctx, query, task.Title, task.Description, task.Status, task.ScheduledAt, task.UpdatedAt, task.ID)
 	updated, err := scanTask(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -141,6 +170,52 @@ func (r *Repository) Update(ctx context.Context, task *taskdomain.Task) (*taskdo
 	}
 
 	return updated, nil
+}
+
+func (r *Repository) UpdateSeriesTaskAndCurrent(ctx context.Context, taskID, ruleID int64, input *usecase.UpdateInput) (*taskdomain.Task, error) {
+	const query = `
+       UPDATE tasks
+       SET 
+           title = $1,
+           description = $2,
+           status = CASE WHEN id = $3 THEN $4 ELSE status END,
+           is_modified = CASE WHEN id = $3 THEN true ELSE is_modified END,
+           updated_at = NOW()
+       WHERE id = $3 
+          OR (parent_rule_id = $5 AND status = 'new' AND is_modified = false)
+       RETURNING id, title, description, status, scheduled_at, parent_rule_id, is_modified, created_at, updated_at
+    `
+
+	rows, err := r.pool.Query(ctx, query,
+		input.Title,
+		input.Description,
+		taskID,
+		input.Status,
+		ruleID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var updatedCurrentTask *taskdomain.Task
+
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		// We need to return the task that was edited by the user
+		if task.ID == taskID {
+			updatedCurrentTask = task
+		}
+	}
+
+	if updatedCurrentTask == nil {
+		return nil, taskdomain.ErrNotFound
+	}
+
+	return updatedCurrentTask, nil
 }
 
 func (r *Repository) Delete(ctx context.Context, id int64) error {
@@ -158,9 +233,73 @@ func (r *Repository) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (r *Repository) DeleteFutureTasks(ctx context.Context, ruleID int64) error {
+	const query = `
+		DELETE FROM tasks 
+		WHERE parent_rule_id = $1 AND status = 'new' AND is_modified = false
+	`
+
+	_, err := r.pool.Exec(ctx, query, ruleID)
+	return err
+}
+
+func (r *Repository) UpdateRule(ctx context.Context, ruleID int64, ruleType taskdomain.RecurrenceType, params []byte, scheduledAt *time.Time) error {
+	const query = `
+		UPDATE recurrence_rules 
+		SET type = $1, params = $2, scheduled_at = $3
+		WHERE id = $4
+	`
+
+	result, err := r.pool.Exec(ctx, query, ruleType, params, scheduledAt, ruleID)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	return nil
+}
+
+func (r *Repository) CreateTasks(ctx context.Context, tasks []taskdomain.Task) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+
+	const query = `
+		INSERT INTO tasks (title, description, status, scheduled_at, parent_rule_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`
+
+	// Start transaction
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	for _, task := range tasks {
+		_, err := tx.Exec(ctx, query,
+			task.Title,
+			task.Description,
+			task.Status,
+			task.ScheduledAt,
+			task.ParentRuleID,
+			task.CreatedAt,
+			task.UpdatedAt,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 func (r *Repository) List(ctx context.Context) ([]taskdomain.Task, error) {
 	const query = `
-		SELECT id, title, description, status, scheduled_at, parent_rule_id, created_at, updated_at
+		SELECT id, title, description, status, scheduled_at, parent_rule_id, is_modified, created_at, updated_at
 		FROM tasks
 		ORDER BY id DESC
 	`
@@ -188,6 +327,50 @@ func (r *Repository) List(ctx context.Context) ([]taskdomain.Task, error) {
 	return tasks, nil
 }
 
+func (r *Repository) RescheduleSeriesTx(
+	ctx context.Context,
+	ruleID int64,
+	currentTaskID int64,
+	ruleType taskdomain.RecurrenceType,
+	params []byte,
+	scheduledAt *time.Time,
+	newTasks []taskdomain.Task,
+) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Обновляем правило
+	const ruleQuery = `UPDATE recurrence_rules SET type = $1, params = $2, scheduled_at = $3 WHERE id = $4`
+	if _, err := tx.Exec(ctx, ruleQuery, ruleType, params, scheduledAt, ruleID); err != nil {
+		return fmt.Errorf("update rule: %w", err)
+	}
+
+	// 2. Удаляем будущее
+	const deleteQuery = `DELETE FROM tasks WHERE parent_rule_id = $1 AND status = 'new' AND is_modified = false AND id != $2`
+	if _, err := tx.Exec(ctx, deleteQuery, ruleID, currentTaskID); err != nil {
+		return fmt.Errorf("delete future tasks: %w", err)
+	}
+
+	// 3. Создаем новые задачи
+	const insertQuery = `
+		INSERT INTO tasks (title, description, status, scheduled_at, parent_rule_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`
+	for _, task := range newTasks {
+		if _, err := tx.Exec(ctx, insertQuery,
+			task.Title, task.Description, task.Status,
+			task.ScheduledAt, task.ParentRuleID, task.CreatedAt, task.UpdatedAt,
+		); err != nil {
+			return fmt.Errorf("insert task: %w", err)
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 type taskScanner interface {
 	Scan(dest ...any) error
 }
@@ -207,6 +390,7 @@ func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
 		&status,
 		&scheduledAt,
 		&ruleID,
+		&task.IsModified,
 		&task.CreatedAt,
 		&task.UpdatedAt,
 	); err != nil {

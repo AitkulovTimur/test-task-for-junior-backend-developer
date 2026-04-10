@@ -51,18 +51,22 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Ta
 
 		// 3. Collect tasks
 		tasks := make([]taskdomain.Task, len(dates))
+		now := s.now()
 		for i, d := range dates {
-			now := s.now()
 
 			tasks[i] = taskdomain.Task{
 				Title:       normalized.Title,
 				Description: normalized.Description,
-				Status:      normalized.Status,
+				//TODO: добавить в README: полагаю, что в иных статусах может быть только первая задача. Другие не могут быть, так как они в будущем
+				Status:      taskdomain.StatusNew,
 				ScheduledAt: &d,
 				CreatedAt:   now,
 				UpdatedAt:   now,
 			}
 		}
+
+		//TODO:Only the first task can have his own created status (README)
+		tasks[0].Status = normalized.Status
 
 		// 4. Serialization for DB JSONB
 		paramsJSON, err := json.Marshal(input.Recurrence)
@@ -71,9 +75,10 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Ta
 		}
 
 		rule := &taskdomain.RecurrenceRule{
-			Type:      input.RecurrenceType,
-			Params:    paramsJSON,
-			CreatedAt: s.now(),
+			Type:        input.RecurrenceType,
+			Params:      paramsJSON,
+			ScheduledAt: input.ScheduledAt,
+			CreatedAt:   s.now(),
 		}
 
 		return s.repo.CreateSeries(ctx, rule, tasks)
@@ -115,20 +120,105 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*tas
 		return nil, err
 	}
 
-	model := &taskdomain.Task{
-		ID:          id,
-		Title:       normalized.Title,
-		Description: normalized.Description,
-		Status:      normalized.Status,
-		UpdatedAt:   s.now(),
-	}
-
-	updated, err := s.repo.Update(ctx, model)
+	// Get current task to check if it's part of a series
+	currentTask, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	return updated, nil
+	// Case 1: Single update (ApplyToAll == false)
+	if !normalized.ApplyToAll {
+		return s.updateSingleTask(ctx, id, &normalized)
+	}
+
+	// Case 2 & 3: Apply to all - need to check if recurrence parameters changed
+	if currentTask.ParentRuleID == nil {
+		// Not a series task, treat as single update
+		return s.updateSingleTask(ctx, id, &normalized)
+	}
+
+	// Check if recurrence parameters changed
+	recurrenceChanged, err := RecurrenceChanged(ctx, s.repo, currentTask, &normalized)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check recurrence changes: %w", err)
+	}
+
+	if !recurrenceChanged {
+		// Case 2: Bulk content update - recurrence didn't change
+		// Update series content
+		updatedCurrentTask, err := s.repo.UpdateSeriesTaskAndCurrent(ctx, currentTask.ID, *currentTask.ParentRuleID, &normalized)
+		if err != nil {
+			return nil, fmt.Errorf("failed to update series content: %w", err)
+		}
+
+		return updatedCurrentTask, nil
+	}
+
+	// Case 3: Re-scheduling - recurrence parameters changed
+	return s.rescheduleSeries(ctx, id, currentTask.ParentRuleID, &normalized)
+}
+
+func (s *Service) updateSingleTask(ctx context.Context, id int64, input *UpdateInput) (*taskdomain.Task, error) {
+	model := &taskdomain.Task{
+		ID:          id,
+		Title:       input.Title,
+		Description: input.Description,
+		Status:      input.Status,
+		ScheduledAt: input.ScheduledAt,
+		UpdatedAt:   s.now(),
+	}
+	return s.repo.Update(ctx, model)
+}
+
+func (s *Service) rescheduleSeries(ctx context.Context, taskID int64, ruleID *int64, input *UpdateInput) (*taskdomain.Task, error) {
+
+	if input.Recurrence == nil {
+		return nil, fmt.Errorf("%w: recurrence is required while rescheduling series", ErrInvalidInput)
+	}
+
+	paramsJSON, err := json.Marshal(input.Recurrence)
+	if err != nil {
+		return nil, fmt.Errorf("marshal recurrence params: %w", err)
+	}
+
+	start := s.now()
+	if input.ScheduledAt != nil {
+		start = *input.ScheduledAt
+	}
+
+	createInput := CreateInput{
+		Title:          input.Title,
+		Description:    input.Description,
+		Status:         input.Status,
+		ScheduledAt:    input.ScheduledAt,
+		RecurrenceType: input.RecurrenceType,
+		Recurrence:     input.Recurrence,
+	}
+
+	dates, err := s.generator.GenerateDates(start, &createInput, s.planningCounts[input.RecurrenceType])
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate dates: %w", err)
+	}
+
+	tasks := make([]taskdomain.Task, len(dates))
+	for i, d := range dates {
+		tasks[i] = taskdomain.Task{
+			Title:        input.Title,
+			Description:  input.Description,
+			Status:       taskdomain.StatusNew,
+			ScheduledAt:  &d,
+			ParentRuleID: ruleID,
+			CreatedAt:    s.now(),
+			UpdatedAt:    s.now(),
+		}
+	}
+
+	err = s.repo.RescheduleSeriesTx(ctx, *ruleID, taskID, input.RecurrenceType, paramsJSON, input.ScheduledAt, tasks)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reschedule in db: %w", err)
+	}
+
+	return s.updateSingleTask(ctx, taskID, input)
 }
 
 func (s *Service) Delete(ctx context.Context, id int64) error {
@@ -167,6 +257,16 @@ func validateCreateInput(input CreateInput) (CreateInput, error) {
 		}
 	}
 
+	hasRecurrence := input.Recurrence != nil
+	hasType := input.RecurrenceType != ""
+
+	if hasRecurrence != hasType {
+		return CreateInput{},
+			fmt.Errorf(
+				"%w: recurrence info must be complete (both fields (recurrence_type + recurrence) must be provided)",
+				ErrInvalidInput)
+	}
+
 	return input, nil
 }
 
@@ -178,8 +278,27 @@ func validateUpdateInput(input UpdateInput) (UpdateInput, error) {
 		return UpdateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
 	}
 
+	//TODO: добавить в README: предполагается, что если потерялся статус, то он становится new
+	if input.Status == "" {
+		input.Status = taskdomain.StatusNew
+	}
+
 	if !input.Status.Valid() {
 		return UpdateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
+	}
+
+	// Validate recurrence if provided
+	if input.Recurrence != nil {
+		if err := input.Recurrence.ValidateFieldsFilling(input.RecurrenceType); err != nil {
+			return UpdateInput{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+	}
+
+	// Validate scheduled date
+	if input.ScheduledAt != nil {
+		if input.ScheduledAt.UTC().Before(time.Now().UTC()) {
+			return UpdateInput{}, fmt.Errorf("%w: scheduled date cannot be in the past", ErrInvalidInput)
+		}
 	}
 
 	return input, nil
