@@ -233,14 +233,92 @@ func (r *Repository) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (r *Repository) DeleteFutureTasks(ctx context.Context, ruleID int64) error {
-	const query = `
-		DELETE FROM tasks 
-		WHERE parent_rule_id = $1 AND status = 'new' AND is_modified = false
-	`
+func (r *Repository) DeleteFutureTasksTx(ctx context.Context, ruleID int64, taskID int64, scheduledAt *time.Time) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
 
-	_, err := r.pool.Exec(ctx, query, ruleID)
-	return err
+	// Delete the current task
+	const deleteCurrentQuery = `DELETE FROM tasks WHERE id = $1`
+	result, err := tx.Exec(ctx, deleteCurrentQuery, taskID)
+	if err != nil {
+		return fmt.Errorf("delete current task: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	// TODO: add to README: если у нас идет удадение будущих задач, то подразуемевается,
+	// что юзер хочет удалить только шаблонные новые задачи, а не те, что он кастомизировал через single Update.
+	const deleteFutureQuery = `
+		DELETE FROM tasks 
+		WHERE parent_rule_id = $1 AND scheduled_at > $2 AND status = 'new' AND is_modified = false
+	`
+	_, err = tx.Exec(ctx, deleteFutureQuery, ruleID, scheduledAt)
+	if err != nil {
+		return fmt.Errorf("delete future tasks: %w", err)
+	}
+
+	// Check if any tasks remain for this rule
+	const checkRemainingQuery = `SELECT COUNT(*) FROM tasks WHERE parent_rule_id = $1`
+	var count int
+	err = tx.QueryRow(ctx, checkRemainingQuery, ruleID).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check remaining tasks: %w", err)
+	}
+
+	// If no tasks remain, delete the rule
+	if count == 0 {
+		const deleteRuleQuery = `DELETE FROM recurrence_rules WHERE id = $1`
+		_, err = tx.Exec(ctx, deleteRuleQuery, ruleID)
+		if err != nil {
+			return fmt.Errorf("delete rule: %w", err)
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (r *Repository) DeleteEntireSeriesTx(ctx context.Context, ruleID int64, deleteModified bool) error {
+	// Log the deleteModified parameter value
+	fmt.Printf("DeleteEntireSeriesTx: ruleID=%d, deleteModified=%t\n", ruleID, deleteModified)
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Delete tasks based on deleteModified flag
+	var deleteTasksQuery string
+	if deleteModified {
+		// Delete all tasks associated with the rule
+		fmt.Printf("DeleteEntireSeriesTx: Deleting ALL tasks for ruleID=%d\n", ruleID)
+		deleteTasksQuery = `DELETE FROM tasks WHERE parent_rule_id = $1`
+	} else {
+		// Delete only unmodified tasks
+		fmt.Printf("DeleteEntireSeriesTx: Deleting only UNMODIFIED tasks for ruleID=%d\n", ruleID)
+		deleteTasksQuery = `DELETE FROM tasks WHERE parent_rule_id = $1 AND is_modified = false`
+	}
+
+	_, err = tx.Exec(ctx, deleteTasksQuery, ruleID)
+	if err != nil {
+		return fmt.Errorf("delete series tasks: %w", err)
+	}
+
+	// Delete the recurrence rule
+	const deleteRuleQuery = `DELETE FROM recurrence_rules WHERE id = $1`
+	result, err := tx.Exec(ctx, deleteRuleQuery, ruleID)
+	if err != nil {
+		return fmt.Errorf("delete recurrence rule: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return taskdomain.ErrNotFound
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (r *Repository) UpdateRule(ctx context.Context, ruleID int64, ruleType taskdomain.RecurrenceType, params []byte, scheduledAt *time.Time) error {

@@ -26,6 +26,8 @@ type Repository interface {
 		scheduledAt *time.Time,
 		newTasks []taskdomain.Task,
 	) error
+	DeleteFutureTasksTx(ctx context.Context, ruleID int64, taskID int64, scheduledAt *time.Time) error
+	DeleteEntireSeriesTx(ctx context.Context, ruleID int64, deleteModified bool) error
 }
 
 type Generator interface {
@@ -36,7 +38,7 @@ type Usecase interface {
 	Create(ctx context.Context, input CreateInput) (*taskdomain.Task, error)
 	GetByID(ctx context.Context, id int64) (*taskdomain.Task, error)
 	Update(ctx context.Context, id int64, input UpdateInput) (*taskdomain.Task, error)
-	Delete(ctx context.Context, id int64) error
+	Delete(ctx context.Context, id int64, mode taskdomain.DeleteMode, deleteModified bool) error
 	List(ctx context.Context) ([]taskdomain.Task, error)
 }
 
