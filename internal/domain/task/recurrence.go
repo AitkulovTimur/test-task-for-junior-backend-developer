@@ -26,10 +26,11 @@ func (t RecurrenceType) Valid() bool {
 }
 
 type RecurrenceRule struct {
-	ID        int64          `json:"id"`
-	Type      RecurrenceType `json:"type"`
-	Params    []byte         `json:"params"`
-	CreatedAt time.Time      `json:"created_at"`
+	ID          int64          `json:"id"`
+	Type        RecurrenceType `json:"type"`
+	Params      []byte         `json:"params"`
+	ScheduledAt *time.Time     `json:"scheduled_at,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
 }
 
 // TODO: добавить в README: Может быть заполнено только 1 поле. Иначе упадет валидация (оптимизация для свагера займет время, решил оставить так, для экономии времени)
@@ -43,7 +44,7 @@ type RecurrenceParams struct {
 	WeekDays []int `json:"week_days,omitempty"`
 }
 
-func (p RecurrenceParams) ValidateFieldsFilling(t RecurrenceType) error {
+func (p *RecurrenceParams) ValidateFieldsFilling(t RecurrenceType) error {
 	if !t.Valid() {
 		return fmt.Errorf("invalid recurrence type: %s", t)
 	}

@@ -73,9 +73,13 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, err := h.usecase.Update(r.Context(), id, taskusecase.UpdateInput{
-		Title:       req.Title,
-		Description: req.Description,
-		Status:      req.Status,
+		Title:          req.Title,
+		Description:    req.Description,
+		Status:         req.Status,
+		ScheduledAt:    req.ScheduledAt,
+		ApplyToAll:     req.ApplyToAll,
+		RecurrenceType: req.RecurrenceType,
+		Recurrence:     req.Recurrence,
 	})
 	if err != nil {
 		writeUsecaseError(w, err)

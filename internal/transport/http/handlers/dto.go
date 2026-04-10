@@ -16,9 +16,13 @@ type taskCreateDTO struct {
 }
 
 type taskUpdateDTO struct {
-	Title       string            `json:"title"`
-	Description string            `json:"description"`
-	Status      taskdomain.Status `json:"status"`
+	Title          string                       `json:"title"`
+	Description    string                       `json:"description"`
+	Status         taskdomain.Status            `json:"status"`
+	ScheduledAt    *time.Time                   `json:"scheduled_at"`
+	ApplyToAll     bool                         `json:"apply_to_all"`
+	RecurrenceType taskdomain.RecurrenceType    `json:"recurrence_type,omitempty"`
+	Recurrence     *taskdomain.RecurrenceParams `json:"recurrence,omitempty"`
 }
 
 type taskDTO struct {
