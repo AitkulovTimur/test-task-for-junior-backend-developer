@@ -18,6 +18,7 @@ import (
 	swaggerdocs "example.com/taskservice/internal/transport/http/docs"
 	httphandlers "example.com/taskservice/internal/transport/http/handlers"
 	"example.com/taskservice/internal/usecase/task"
+	"example.com/taskservice/internal/worker"
 )
 
 func main() {
@@ -40,6 +41,10 @@ func main() {
 	taskRepo := postgresrepo.New(pool)
 	dateGenerator := logic.NewGenerator()
 	taskUsecase := task.NewService(taskRepo, dateGenerator, cfg.PlanningCounts)
+
+	// Initialize and start planner
+	planner := worker.NewPlanner(taskUsecase, cfg.PlannerInterval)
+	go planner.Start(ctx)
 
 	taskHandler := httphandlers.NewTaskHandler(taskUsecase)
 	docsHandler := swaggerdocs.NewHandler()
@@ -71,16 +76,18 @@ func main() {
 }
 
 type config struct {
-	HTTPAddr    string
-	DatabaseDSN string
+	HTTPAddr        string
+	DatabaseDSN     string
+	PlannerInterval time.Duration
 	// Map for dates generation limits
 	PlanningCounts map[taskdomain.RecurrenceType]int
 }
 
 func loadConfig() config {
 	cfg := config{
-		HTTPAddr:    envOrDefault("HTTP_ADDR", ":8080"),
-		DatabaseDSN: envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable"),
+		HTTPAddr:        envOrDefault("HTTP_ADDR", ":8080"),
+		DatabaseDSN:     envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable"),
+		PlannerInterval: getDurationOrDefault("PLANNER_INTERVAL", 1*time.Minute), //For test purposes
 		PlanningCounts: map[taskdomain.RecurrenceType]int{
 			//TODO добавить в README: число задач для предгенерации. Сделал конфигурируемыми, несмотря на то, что в требованиях не было такого условия
 			taskdomain.TypeDaily:   7,
@@ -103,5 +110,14 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 
+	return fallback
+}
+
+func getDurationOrDefault(key string, fallback time.Duration) time.Duration {
+	if value := os.Getenv(key); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			return duration
+		}
+	}
 	return fallback
 }
