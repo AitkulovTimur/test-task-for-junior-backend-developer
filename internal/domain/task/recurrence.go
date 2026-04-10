@@ -44,6 +44,15 @@ type RecurrenceParams struct {
 	WeekDays []int `json:"week_days,omitempty"`
 }
 
+// ReplenishInfo — model of Recurrence for generator
+type ReplenishInfo struct {
+	Rule            RecurrenceRule
+	FutureCount     int
+	LastTaskDate    time.Time
+	BaseTitle       string
+	BaseDescription string
+}
+
 func (p *RecurrenceParams) ValidateFieldsFilling(t RecurrenceType) error {
 	if !t.Valid() {
 		return fmt.Errorf("invalid recurrence type: %s", t)

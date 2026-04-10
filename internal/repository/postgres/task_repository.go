@@ -321,6 +321,105 @@ func (r *Repository) DeleteEntireSeriesTx(ctx context.Context, ruleID int64, del
 	return tx.Commit(ctx)
 }
 
+func (r *Repository) GetRulesWithStatsForReplenish(ctx context.Context,
+	recurrenceType taskdomain.RecurrenceType, now time.Time,
+	targetCount int) ([]taskdomain.ReplenishInfo, error) {
+	// Запрос находит правила и сразу вычисляет:
+	// 1. Сколько задач в будущем уже есть (future_count)
+	// 2. Дату самой последней задачи в серии (last_task_date)
+	// 3. Берет Title и Description из последней задачи для клонирования
+	const query = `
+       SELECT 
+          r.id, r.type, r.params, r.scheduled_at,
+          COUNT(t.id) FILTER (WHERE t.scheduled_at > $2) as future_count,
+          COALESCE(MAX(t.scheduled_at), r.scheduled_at) as last_task_date,
+          (SELECT title FROM tasks WHERE parent_rule_id = r.id ORDER BY scheduled_at DESC LIMIT 1) as last_title,
+          (SELECT description FROM tasks WHERE parent_rule_id = r.id ORDER BY scheduled_at DESC LIMIT 1) as last_desc
+       FROM recurrence_rules r
+       LEFT JOIN tasks t ON r.id = t.parent_rule_id
+       WHERE r.type = $1
+       GROUP BY r.id
+       HAVING COUNT(t.id) FILTER (WHERE t.scheduled_at > $2) < $3
+    `
+
+	rows, err := r.pool.Query(ctx, query, recurrenceType, now, targetCount)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []taskdomain.ReplenishInfo
+	for rows.Next() {
+		var info taskdomain.ReplenishInfo
+		var lastDate *time.Time
+		var title, desc *string
+
+		err := rows.Scan(
+			&info.Rule.ID, &info.Rule.Type, &info.Rule.Params, &info.Rule.ScheduledAt,
+			&info.FutureCount, &lastDate, &title, &desc,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if lastDate != nil {
+			info.LastTaskDate = *lastDate
+		}
+		if title != nil {
+			info.BaseTitle = *title
+		}
+		if desc != nil {
+			info.BaseDescription = *desc
+		}
+
+		results = append(results, info)
+	}
+	return results, nil
+}
+
+func (r *Repository) CreateTasks(ctx context.Context, tasks []taskdomain.Task) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+
+	// Начинаем транзакцию, чтобы вставить всю пачку атомарно
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	const query = `
+		INSERT INTO tasks (
+			title, description, status, scheduled_at, 
+			parent_rule_id, is_modified, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`
+
+	// Используем подготовленное выражение для всей пачки
+	for _, t := range tasks {
+		_, err := tx.Exec(ctx, query,
+			t.Title,
+			t.Description,
+			t.Status,
+			t.ScheduledAt,
+			t.ParentRuleID,
+			t.IsModified, // По умолчанию false
+			t.CreatedAt,
+			t.UpdatedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("exec insert task: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return nil
+}
+
 func (r *Repository) UpdateRule(ctx context.Context, ruleID int64, ruleType taskdomain.RecurrenceType, params []byte, scheduledAt *time.Time) error {
 	const query = `
 		UPDATE recurrence_rules 
@@ -338,41 +437,6 @@ func (r *Repository) UpdateRule(ctx context.Context, ruleID int64, ruleType task
 	}
 
 	return nil
-}
-
-func (r *Repository) CreateTasks(ctx context.Context, tasks []taskdomain.Task) error {
-	if len(tasks) == 0 {
-		return nil
-	}
-
-	const query = `
-		INSERT INTO tasks (title, description, status, scheduled_at, parent_rule_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`
-
-	// Start transaction
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	for _, task := range tasks {
-		_, err := tx.Exec(ctx, query,
-			task.Title,
-			task.Description,
-			task.Status,
-			task.ScheduledAt,
-			task.ParentRuleID,
-			task.CreatedAt,
-			task.UpdatedAt,
-		)
-		if err != nil {
-			return err
-		}
-	}
-
-	return tx.Commit(ctx)
 }
 
 func (r *Repository) List(ctx context.Context) ([]taskdomain.Task, error) {
