@@ -36,12 +36,12 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Ta
 	}
 
 	if input.Recurrence != nil {
-		// 1. Validate recurrence
+		// Validate recurrence configuration
 		if err := input.Recurrence.ValidateFieldsFilling(input.RecurrenceType); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 		}
 
-		// 2. Generate dates for recurrence
+		// Generate recurrence dates
 		start := s.now()
 		if input.ScheduledAt != nil {
 			start = *input.ScheduledAt
@@ -52,7 +52,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Ta
 			return nil, fmt.Errorf("failed to generate dates: %w", err)
 		}
 
-		// 3. Collect tasks
+		// Build task instances
 		tasks := make([]taskdomain.Task, len(dates))
 		now := s.now()
 		for i, d := range dates {
@@ -60,7 +60,6 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Ta
 			tasks[i] = taskdomain.Task{
 				Title:       normalized.Title,
 				Description: normalized.Description,
-				//TODO: добавить в README: полагаю, что в иных статусах может быть только первая задача. Другие не могут быть, так как они в будущем
 				Status:      taskdomain.StatusNew,
 				ScheduledAt: &d,
 				CreatedAt:   now,
@@ -68,10 +67,10 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Ta
 			}
 		}
 
-		//TODO:Only the first task can have his own created status (README)
+		// First task inherits the requested status, others remain new
 		tasks[0].Status = normalized.Status
 
-		// 4. Serialization for DB JSONB
+		// Serialize recurrence parameters
 		paramsJSON, err := json.Marshal(input.Recurrence)
 		if err != nil {
 			return nil, fmt.Errorf("marshal recurrence params: %w", err)
@@ -136,27 +135,27 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*tas
 		return nil, err
 	}
 
-	// Case 1: Single update (ApplyToAll == false)
+	// Single task update mode
 	if !normalized.ApplyToAll {
 		log.Printf("Service: performing single task update for ID %d", id)
 		return s.updateSingleTask(ctx, id, &normalized)
 	}
 
-	// Case 2 & 3: Apply to all - need to check if recurrence parameters changed
+	// Series-wide update - check for recurrence changes
 	if currentTask.ParentRuleID == nil {
-		// Not a series task, treat as single update
+		// Isolated task - apply single update
 		return s.updateSingleTask(ctx, id, &normalized)
 	}
 
-	// Check if recurrence parameters changed
+	// Detect recurrence parameter changes
 	recurrenceChanged, err := RecurrenceChanged(ctx, s.repo, currentTask, &normalized)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check recurrence changes: %w", err)
 	}
 
 	if !recurrenceChanged {
-		// Case 2: Bulk content update - recurrence didn't change
-		// Update series content
+		// Content-only update - preserve recurrence pattern
+		// Apply content changes to series
 		log.Printf("Service: updating series content for rule ID %d", *currentTask.ParentRuleID)
 		updatedCurrentTask, err := s.repo.UpdateSeriesTaskAndCurrent(ctx, currentTask.ID, *currentTask.ParentRuleID, &normalized)
 		if err != nil {
@@ -167,8 +166,8 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*tas
 		return updatedCurrentTask, nil
 	}
 
-	// Case 3: Re-scheduling - recurrence parameters changed
-	log.Printf("Service: rescheduling series for rule ID %d", *currentTask.ParentRuleID)
+	// series full update with updating recurrence rule
+	log.Printf("Service: rescheduling series and full update for rule ID %d", *currentTask.ParentRuleID)
 	return s.rescheduleSeries(ctx, id, currentTask.ParentRuleID, &normalized)
 }
 
@@ -245,7 +244,7 @@ func (s *Service) Delete(ctx context.Context, id int64, mode taskdomain.DeleteMo
 		return fmt.Errorf("%w: invalid delete mode", ErrInvalidInput)
 	}
 
-	// Get current task to check if it's part of a series
+	// Fetch current task to determine series context
 	currentTask, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		log.Printf("Service: failed to get task %d for deletion: %v", id, err)
@@ -259,7 +258,7 @@ func (s *Service) Delete(ctx context.Context, id int64, mode taskdomain.DeleteMo
 
 	case taskdomain.DeleteModeFuture:
 		if currentTask.ParentRuleID == nil {
-			// Not a series task, treat as single deletion
+			// Isolated task - simple deletion
 			log.Printf("Service: task %d is not part of series, treating as single deletion", id)
 			return s.repo.Delete(ctx, id)
 		}
@@ -268,7 +267,7 @@ func (s *Service) Delete(ctx context.Context, id int64, mode taskdomain.DeleteMo
 
 	case taskdomain.DeleteModeEntireSeries:
 		if currentTask.ParentRuleID == nil {
-			// Not a series task, treat as single deletion
+			// Isolated task - simple deletion
 			log.Printf("Service: task %d is not part of series, treating as single deletion", id)
 			return s.repo.Delete(ctx, id)
 		}
@@ -294,7 +293,7 @@ func (s *Service) ReplenishTasks(ctx context.Context) error {
 	for recurrenceType, targetCount := range s.planningCounts {
 		log.Printf("Service: processing recurrence type '%s' with target count %d", recurrenceType, targetCount)
 
-		// Obtaining all data in one query for the entire type
+		// Batch fetch rules requiring replenishment
 		infos, err := s.repo.GetRulesWithStatsForReplenish(ctx, recurrenceType, now, targetCount)
 		if err != nil {
 			log.Printf("Service: ERROR fetching rules for type %s: %v", recurrenceType, err)
@@ -334,18 +333,16 @@ func (s *Service) processReplenishment(ctx context.Context, info taskdomain.Repl
 		return err
 	}
 
-	// Генератору отдаем точку старта (дату последней задачи)
 	dates, err := s.generator.GenerateDates(info.LastTaskDate, &CreateInput{
 		RecurrenceType: info.Rule.Type,
 		Recurrence:     &params,
-		ScheduledAt:    info.Rule.ScheduledAt, // Оригинальное время как fallback
+		ScheduledAt:    info.Rule.ScheduledAt,
 	}, needed)
 
 	if err != nil {
 		return err
 	}
 
-	// Собираем Batch для вставки
 	newTasks := make([]taskdomain.Task, len(dates))
 	for i, date := range dates {
 		newTasks[i] = taskdomain.Task{
@@ -378,8 +375,6 @@ func validateCreateInput(input CreateInput) (CreateInput, error) {
 		return CreateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
 	}
 
-	//TODO: добавить в README, это мое решение, так как было на мокапе.
-	//Возможно подразумевалась функциональность без ScheduledAt
 	if input.ScheduledAt != nil {
 		if input.ScheduledAt.UTC().Before(time.Now().UTC()) {
 			return CreateInput{}, fmt.Errorf("%w: scheduled date cannot be in the past", ErrInvalidInput)
@@ -407,7 +402,6 @@ func validateUpdateInput(input UpdateInput) (UpdateInput, error) {
 		return UpdateInput{}, fmt.Errorf("%w: title is required", ErrInvalidInput)
 	}
 
-	//TODO: добавить в README: предполагается, что если потерялся статус, то он становится new
 	if input.Status == "" {
 		input.Status = taskdomain.StatusNew
 	}

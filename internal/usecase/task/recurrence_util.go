@@ -10,7 +10,7 @@ import (
 	taskdomain "example.com/taskservice/internal/domain/task"
 )
 
-// CompareScheduledAtOnlyTime compares only the time component (hour, minute, second) of two time pointers
+// IsScheduledTimeDifferent compares only the time component (hour, minute, second)
 // Returns true if time components are different, false if they are the same
 func IsScheduledTimeDifferent(oldTime, newTime *time.Time, taskId int64) (bool, error) {
 	if oldTime == nil || newTime == nil {
@@ -32,8 +32,6 @@ func RecurrenceChanged(
 	input *UpdateInput,
 ) (bool, error) {
 
-	// TODO: добавить в README: при серийном обновление разрешено с фронта присылать ScheduledAt отличную только по времени. День менять нельзя в серийном обновлении
-	// + предполагаю, что ScheduledAt обязателен
 	scheduledTimeChanged, err := IsScheduledTimeDifferent(currentTask.ScheduledAt, input.ScheduledAt, currentTask.ID)
 	if scheduledTimeChanged {
 		return true, err

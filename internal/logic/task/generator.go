@@ -8,18 +8,25 @@ import (
 	ports "example.com/taskservice/internal/usecase/task"
 )
 
+// dateGenerator implements generating task dates
+// based on different recurrence patterns (daily, weekly, monthly, parity, specific)
 type dateGenerator struct{}
 
 func NewGenerator() ports.Generator {
 	return &dateGenerator{}
 }
 
+// GenerateDates generates a slice of dates based on the recurrence rules
+// startFrom: the initial date to start generating from
+// input: contains recurrence parameters and type
+// count: number of dates to generate
 func (g *dateGenerator) GenerateDates(
 	startFrom time.Time,
 	input *ports.CreateInput,
 	count int,
 ) ([]time.Time, error) {
 
+	// If no recurrence is specified, return only the start date
 	if input.Recurrence == nil {
 		return []time.Time{startFrom}, nil
 	}
@@ -45,12 +52,15 @@ func (g *dateGenerator) GenerateDates(
 	}
 }
 
+// generateDaily creates dates for daily recurring tasks
+// Interval specifies how many days to skip between each occurrence
 func (g *dateGenerator) generateDaily(
 	start time.Time,
 	params *taskdomain.RecurrenceParams,
 	count int,
 ) ([]time.Time, error) {
 
+	// Validate that interval is positive (can't skip negative days)
 	if params.Interval <= 0 {
 		return nil, fmt.Errorf("interval must be positive for daily tasks")
 	}
@@ -66,18 +76,31 @@ func (g *dateGenerator) generateDaily(
 	return dates, nil
 }
 
+// generateWeekly creates dates for weekly recurring tasks on specific weekdays.
+// WeekDays defines the days of the week when the task should occur.
+//
+// Weekday mapping follows Go's time.Weekday convention:
+//
+//	0 = Sunday
+//	1 = Monday
+//	...
+//	6 = Saturday
+//
+// Values outside the 0–6 range will be normalized using modulo 7.
 func (g *dateGenerator) generateWeekly(
 	start time.Time,
 	params *taskdomain.RecurrenceParams,
 	count int,
 ) ([]time.Time, error) {
 
+	// Validate that at least one weekday is specified
 	if len(params.WeekDays) == 0 {
 		return nil, fmt.Errorf("weekly tasks require week_days")
 	}
 
 	const daysInWeek = 7
 
+	// Convert weekday numbers to a map for quick lookup
 	days := make(map[time.Weekday]bool)
 	for _, d := range params.WeekDays {
 		days[time.Weekday(d%daysInWeek)] = true
@@ -96,12 +119,15 @@ func (g *dateGenerator) generateWeekly(
 	return dates, nil
 }
 
+// generateMonthly creates dates for monthly recurring tasks on a specific day of the month
+// MonthDay specifies which day of the month (1-31) the task should occur
 func (g *dateGenerator) generateMonthly(
 	start time.Time,
 	params *taskdomain.RecurrenceParams,
 	count int,
 ) ([]time.Time, error) {
 
+	// Validate that month day is within valid range
 	if params.MonthDay < 1 || params.MonthDay > 31 {
 		return nil, fmt.Errorf("invalid month_day: %d", params.MonthDay)
 	}
@@ -111,7 +137,7 @@ func (g *dateGenerator) generateMonthly(
 
 	y, m, _ := current.Date()
 
-	// If current day already passed target day — move to next month
+	// If current day already passed target day for this month, move to next month
 	if current.Day() > params.MonthDay {
 		m++
 	}
@@ -126,9 +152,11 @@ func (g *dateGenerator) generateMonthly(
 			current.Location(),
 		)
 
-		// Handle overflow (e.g. Feb 31 → Mar 3)
+		// Handle month overflow (e.g. Feb 31 becomes Mar 3)
+		// If the generated date is in a different month, it means overflow occurred
 		if t.Month() != m {
-			// Move to next month, day 0 → last day of target month
+			// Use the last day of the target month instead
+			// day 0 in time.Date means "last day of previous month"
 			t = time.Date(
 				y, m+1, 0,
 				current.Hour(),
@@ -149,12 +177,15 @@ func (g *dateGenerator) generateMonthly(
 	return dates, nil
 }
 
+// generateParity creates dates based on day parity (even or odd days of month)
+// IsEven specifies whether to generate dates on even (true) or odd (false) days
 func (g *dateGenerator) generateParity(
 	start time.Time,
 	params *taskdomain.RecurrenceParams,
 	count int,
 ) ([]time.Time, error) {
 
+	// Validate that parity parameter is specified
 	if params.IsEven == nil {
 		return nil, fmt.Errorf("is_even is required for parity tasks")
 	}
@@ -173,6 +204,9 @@ func (g *dateGenerator) generateParity(
 	return dates, nil
 }
 
+// generateSpecific returns pre-defined specific dates for the task
+// SpecificDates contains the exact dates when the task should occur
+// count parameter is ignored as we use all provided dates
 func (g *dateGenerator) generateSpecific(
 	start time.Time,
 	params *taskdomain.RecurrenceParams,
@@ -180,6 +214,7 @@ func (g *dateGenerator) generateSpecific(
 
 	var dates []time.Time
 
+	// Filter dates to include only those that are on or after the start date
 	for _, d := range params.SpecificDates {
 		if !d.Before(start) {
 			dates = append(dates, d)
