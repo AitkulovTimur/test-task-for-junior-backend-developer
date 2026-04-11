@@ -105,7 +105,7 @@ func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	// Get deleteModified from query parameter, default to false
 	deleteModifiedStr := r.URL.Query().Get("deleteModified")
 	deleteModified := false
-	//TODO: add to README: решено, что пользователь может захотеть удалить все задачи серии, но только те, что не редактировал
+
 	if deleteModifiedStr == "true" {
 		deleteModified = true
 	}

@@ -87,9 +87,9 @@ func loadConfig() config {
 	cfg := config{
 		HTTPAddr:        envOrDefault("HTTP_ADDR", ":8080"),
 		DatabaseDSN:     envOrDefault("DATABASE_DSN", "postgres://postgres:postgres@localhost:5432/taskservice?sslmode=disable"),
-		PlannerInterval: getDurationOrDefault("PLANNER_INTERVAL", 1*time.Minute), //For test purposes
+		PlannerInterval: getDurationOrDefault("PLANNER_INTERVAL", 1*time.Minute), //Such an interval was chosen for testing purposes
 		PlanningCounts: map[taskdomain.RecurrenceType]int{
-			//TODO добавить в README: число задач для предгенерации. Сделал конфигурируемыми, несмотря на то, что в требованиях не было такого условия
+
 			taskdomain.TypeDaily:   7,
 			taskdomain.TypeWeekly:  7,
 			taskdomain.TypeMonthly: 3, //quarter of the year

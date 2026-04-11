@@ -12,3 +12,8 @@ ALTER TABLE tasks
 
 CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks (scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent_rule ON tasks (parent_rule_id);
+
+-- Added for frequently used pair of columns
+CREATE INDEX IF NOT EXISTS idx_tasks_active_series
+    ON tasks (parent_rule_id, scheduled_at)
+    WHERE status = 'new' AND is_modified = false;

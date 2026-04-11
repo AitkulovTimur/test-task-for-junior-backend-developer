@@ -31,6 +31,10 @@ func (m *mockRepository) GetByID(_ context.Context, id int64) (*taskdomain.Task,
 			return &task, nil
 		}
 	}
+	return nil, taskdomain.ErrNotFound
+}
+
+func (m *mockRepository) GetRuleByID(_ context.Context, id int64) (*taskdomain.RecurrenceRule, error) {
 	return nil, nil
 }
 
@@ -58,11 +62,45 @@ func (m *mockRepository) List(_ context.Context) ([]taskdomain.Task, error) {
 	return m.tasks, nil
 }
 
+func (m *mockRepository) UpdateSeriesTaskAndCurrent(_ context.Context, taskId int64, ruleID int64, input *UpdateInput) (*taskdomain.Task, error) {
+	for i, task := range m.tasks {
+		if task.ID == taskId {
+			m.tasks[i].Title = input.Title
+			m.tasks[i].Description = input.Description
+			m.tasks[i].Status = input.Status
+			m.tasks[i].ScheduledAt = input.ScheduledAt
+			return &m.tasks[i], nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockRepository) CreateTasks(_ context.Context, tasks []taskdomain.Task) error {
+	m.tasks = append(m.tasks, tasks...)
+	return nil
+}
+
+func (m *mockRepository) RescheduleSeriesTx(_ context.Context, ruleID int64, currentTaskID int64, ruleType taskdomain.RecurrenceType, params []byte, scheduledAt *time.Time, newTasks []taskdomain.Task) error {
+	return nil
+}
+
+func (m *mockRepository) DeleteFutureTasksTx(_ context.Context, ruleID int64, taskID int64, scheduledAt *time.Time) error {
+	return nil
+}
+
+func (m *mockRepository) DeleteEntireSeriesTx(_ context.Context, ruleID int64, deleteModified bool) error {
+	return nil
+}
+
+func (m *mockRepository) GetRulesWithStatsForReplenish(_ context.Context, recurrenceType taskdomain.RecurrenceType, now time.Time, targetCount int) ([]taskdomain.ReplenishInfo, error) {
+	return nil, nil
+}
+
 type mockGenerator struct{}
 
-func (m *mockGenerator) GenerateDates(startFrom time.Time, _ *CreateInput, count int) ([]time.Time, error) {
-	dates := make([]time.Time, count)
-	for i := 0; i < count; i++ {
+func (m *mockGenerator) GenerateDates(startFrom time.Time, _ *CreateInput, countOfDatesToGen int) ([]time.Time, error) {
+	dates := make([]time.Time, countOfDatesToGen)
+	for i := 0; i < countOfDatesToGen; i++ {
 		dates[i] = startFrom.AddDate(0, 0, i)
 	}
 	return dates, nil
@@ -220,24 +258,24 @@ func TestService_Update(t *testing.T) {
 	}
 }
 
-//func TestService_Delete(t *testing.T) {
-//	repo := &mockRepository{}
-//	gen := &mockGenerator{}
-//	service := NewService(repo, gen, map[taskdomain.RecurrenceType]int{})
-//
-//	input := CreateInput{Title: "Test"}
-//	created, _ := service.Create(context.Background(), input)
-//
-//	err := service.Delete(context.Background(), created.ID)
-//	if err != nil {
-//		t.Fatalf("Delete failed: %v", err)
-//	}
-//
-//	_, err = service.GetByID(context.Background(), created.ID)
-//	if err == nil {
-//		t.Error("Expected task to be deleted")
-//	}
-//}
+func TestService_Delete(t *testing.T) {
+	repo := &mockRepository{}
+	gen := &mockGenerator{}
+	service := NewService(repo, gen, map[taskdomain.RecurrenceType]int{})
+
+	input := CreateInput{Title: "Test"}
+	created, _ := service.Create(context.Background(), input)
+
+	err := service.Delete(context.Background(), created.ID, taskdomain.DeleteModeSingle, false)
+	if err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	_, err = service.GetByID(context.Background(), created.ID)
+	if err == nil {
+		t.Error("Expected task to be deleted")
+	}
+}
 
 func TestService_List(t *testing.T) {
 	repo := &mockRepository{}

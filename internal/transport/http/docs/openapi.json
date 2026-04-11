@@ -124,10 +124,32 @@
             "in": "path",
             "required": true,
             "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": ["single", "future", "entire_series"],
+              "default": "single"
+            },
+            "description": "Delete mode: single (only this task), future (this and all future tasks), entire_series (all tasks in series)"
+          },
+          {
+            "name": "deleteModified",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "When mode=entire_series, whether to delete modified tasks (true) or only unmodified ones (false). Only applicable with mode: entire_series"
           }
         ],
         "responses": {
           "204": { "description": "Deleted" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
@@ -169,6 +191,20 @@
             "type": "string",
             "enum": ["new", "in_progress", "done"],
             "example": "new"
+          },
+          "scheduled_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Optional scheduled time for the task"
+          },
+          "recurrence_type": {
+            "type": "string",
+            "enum": ["daily", "weekly", "monthly", "parity", "specific"],
+            "description": "Type of recurrence for recurring tasks"
+          },
+          "recurrence": {
+            "$ref": "#/components/schemas/RecurrenceParams",
+            "description": "Recurrence parameters - only one field should be populated based on recurrence_type"
           }
         }
       },
@@ -188,6 +224,24 @@
             "type": "string",
             "enum": ["new", "in_progress", "done"],
             "example": "in_progress"
+          },
+          "scheduled_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Optional scheduled time for the task"
+          },
+          "apply_to_all": {
+            "type": "boolean",
+            "description": "Whether to apply changes to all future tasks in the series (for recurring tasks)"
+          },
+          "recurrence_type": {
+            "type": "string",
+            "enum": ["daily", "weekly", "monthly", "parity", "specific"],
+            "description": "Type of recurrence for recurring tasks"
+          },
+          "recurrence": {
+            "$ref": "#/components/schemas/RecurrenceParams",
+            "description": "Recurrence parameters - only one field should be populated based on recurrence_type"
           }
         }
       },
@@ -205,6 +259,20 @@
             "enum": ["new", "in_progress", "done"],
             "example": "new"
           },
+          "scheduled_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Optional scheduled time for the task"
+          },
+          "parent_rule_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "ID of the recurrence rule if this is part of a recurring series"
+          },
+          "is_modified": {
+            "type": "boolean",
+            "description": "Whether this task has been modified from its original recurrence template"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -214,6 +282,44 @@
             "type": "string",
             "format": "date-time",
             "example": "2026-03-24T00:00:00Z"
+          }
+        }
+      },
+      "RecurrenceParams": {
+        "type": "object",
+        "description": "Recurrence parameters - only one field should be populated based on recurrence_type",
+        "properties": {
+          "interval": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "For 'daily' type: interval in days (1 = daily, 2 = every 2 days)"
+          },
+          "week_days": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 7
+            },
+            "description": "For 'weekly' type: days of week (1=Monday, 7=Sunday)"
+          },
+          "month_day": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 31,
+            "description": "For 'monthly' type: day of month (1-31)"
+          },
+          "is_even": {
+            "type": "boolean",
+            "description": "For 'parity' type: true for even days, false for odd days"
+          },
+          "specific_dates": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "For 'specific' type: specific dates when task should occur"
           }
         }
       },
